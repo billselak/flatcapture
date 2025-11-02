@@ -400,6 +400,9 @@
 				DEVELOPMENT_TEAM = F6ZLP33JHF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "FlatCapture needs camera access to record your captures.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "FlatCapture uses motion data to keep your recordings level and stable.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "FlatCapture needs permission to save your finished captures to the photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -432,6 +435,9 @@
 				DEVELOPMENT_TEAM = F6ZLP33JHF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "FlatCapture needs camera access to record your captures.";
+				INFOPLIST_KEY_NSMotionUsageDescription = "FlatCapture uses motion data to keep your recordings level and stable.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "FlatCapture needs permission to save your finished captures to the photo library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
