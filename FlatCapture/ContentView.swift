@@ -11,7 +11,6 @@ import UIKit
 
 struct ContentView: View {
     @State private var captureMode: CaptureMode = .live
-    @State private var pendingImage: UIImage?
     @State private var processingMessage: String?
     @State private var isSaving = false
     @State private var alertState: AlertState?
@@ -20,14 +19,10 @@ struct ContentView: View {
         NavigationStack {
             switch captureMode {
             case .live:
-                CameraView { image in
-                    processCapture(image)
+                CameraView { capture in
+                    processCapture(capture)
                 }
                 .toolbar(.hidden, for: .navigationBar)
-
-            case .processing(let image):
-                ProcessingView(image: image)
-                    .toolbar(.hidden, for: .navigationBar)
 
             case .review(let capture):
                 ReviewView(
@@ -58,42 +53,14 @@ struct ContentView: View {
         }
     }
 
-    private func processCapture(_ image: UIImage) {
-        pendingImage = image
-        processingMessage = nil
-        captureMode = .processing(image)
-
-        guard let cgImage = image.cgImage else {
-            processingMessage = "Unable to prepare the capture for correction."
-            captureMode = .review(
-                ProcessedCapture(
-                    original: image,
-                    corrected: image,
-                    didApplyCorrection: false,
-                    usedFallback: false
-                )
-            )
-            pendingImage = nil
-            return
-        }
-
-        let orientation = image.imageOrientation
-
-        Task {
-            do {
-                let result = try await PerspectiveCorrector.correctedImageAsync(
-                    from: cgImage,
-                    orientation: orientation
-                )
-                await completeProcessing(with: result)
-            } catch {
-                await processingFailed()
-            }
-        }
+    private func processCapture(_ capture: ProcessedCapture) {
+        processingMessage = capture.didApplyCorrection
+            ? nil
+            : "We couldn't correct the perspective for this capture."
+        captureMode = .review(capture)
     }
 
     private func handleRetake() {
-        pendingImage = nil
         processingMessage = nil
         captureMode = .live
     }
@@ -116,56 +83,12 @@ struct ContentView: View {
     }
 
     private func resetToLive() {
-        pendingImage = nil
         processingMessage = nil
         captureMode = .live
     }
 
-    @MainActor
-    private func completeProcessing(with result: PerspectiveCorrector.Result) {
-        guard let original = pendingImage else {
-            captureMode = .live
-            return
-        }
-
-        let corrected = result.didApplyCorrection
-            ? UIImage(cgImage: result.image, scale: original.scale, orientation: .up)
-            : original
-
-        processingMessage = nil
-        captureMode = .review(
-            ProcessedCapture(
-                original: original,
-                corrected: corrected,
-                didApplyCorrection: result.didApplyCorrection,
-                usedFallback: result.usedFallback
-            )
-        )
-        pendingImage = nil
-    }
-
-    @MainActor
-    private func processingFailed() {
-        guard let original = pendingImage else {
-            captureMode = .live
-            return
-        }
-
-        processingMessage = "We couldn't correct the perspective for this capture."
-        captureMode = .review(
-            ProcessedCapture(
-                original: original,
-                corrected: original,
-                didApplyCorrection: false,
-                usedFallback: false
-            )
-        )
-        pendingImage = nil
-    }
-
     private enum CaptureMode {
         case live
-        case processing(UIImage)
         case review(ProcessedCapture)
     }
 
@@ -177,32 +100,6 @@ struct ContentView: View {
 
         let id = UUID()
         let kind: Kind
-    }
-}
-
-private struct ProcessingView: View {
-    let image: UIImage
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .ignoresSafeArea()
-
-            VStack(spacing: 12) {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                Text("Analyzing perspective…")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
-            .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
     }
 }
 

@@ -9,6 +9,7 @@ import UIKit
 import Vision
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import QuartzCore
 
 struct ProcessedCapture {
     let original: UIImage
@@ -17,86 +18,80 @@ struct ProcessedCapture {
     let usedFallback: Bool
 }
 
-enum PerspectiveCorrector {
-    private static let ciContext = CIContext(options: nil)
+actor CaptureProcessing {
+    static let shared = CaptureProcessing()
 
-    struct Result {
-        let image: CGImage
-        let didApplyCorrection: Bool
-        let usedFallback: Bool
+    private let ciContext = CIContext(options: nil)
+
+    nonisolated private func bestRectangle(from results: [VNObservation]?) -> VNRectangleObservation? {
+        guard let rects = results as? [VNRectangleObservation] else { return nil }
+        func area(_ r: VNRectangleObservation) -> CGFloat {
+            let w = r.boundingBox.width
+            let h = r.boundingBox.height
+            return w * h
+        }
+        return rects.max { area($0) < area($1) }
     }
 
-    enum Error: Swift.Error {
-        case renderFailure
-    }
+    func correctPerspective(for image: UIImage) async -> UIImage {
+        guard let cgImage = image.cgImage else {
+            print("Vision rectangle detection skipped: original image missing CGImage backing.")
+            return image
+        }
 
-    static func correctedImage(
-        from sourceImage: CGImage,
-        orientation: UIImage.Orientation
-    ) throws -> Result {
-        let exifOrientation = CGImagePropertyOrientation(orientation)
-        let ciImage = CIImage(cgImage: sourceImage).oriented(exifOrientation)
+        let exifOrientation = CGImagePropertyOrientation(image.imageOrientation)
+        let ciImage = CIImage(cgImage: cgImage).oriented(exifOrientation)
 
         let request = VNDetectRectanglesRequest()
-        request.maximumObservations = 1
-        request.minimumConfidence = 0.3
-        request.minimumAspectRatio = 0.3
+        request.maximumObservations = 8
+        request.minimumConfidence = 0.5
+        request.minimumAspectRatio = 0.2
         request.maximumAspectRatio = 1.0
         request.minimumSize = 0.1
 
-        let handler = VNImageRequestHandler(
-            cgImage: sourceImage,
-            orientation: exifOrientation,
-            options: [:]
-        )
+        let start = CACurrentMediaTime()
 
-        try handler.perform([request])
+        do {
+            let handler = VNImageRequestHandler(
+                cgImage: cgImage,
+                orientation: exifOrientation,
+                options: [:]
+            )
 
-        if let observation = request.results?.first {
+            try handler.perform([request])
+            let elapsedMs = (CACurrentMediaTime() - start) * 1000.0
+
+            let observations = request.results
+            guard let observation = bestRectangle(from: observations) else {
+                print(String(format: "Vision rectangle detection returned no candidates (%.2f ms).", elapsedMs))
+                return image
+            }
+
             let extent = ciImage.extent
-
-            let topLeft = observation.topLeft.scaled(to: extent.size)
-            let topRight = observation.topRight.scaled(to: extent.size)
-            let bottomLeft = observation.bottomLeft.scaled(to: extent.size)
-            let bottomRight = observation.bottomRight.scaled(to: extent.size)
-
             let filter = CIFilter.perspectiveCorrection()
             filter.inputImage = ciImage
-            filter.topLeft = topLeft
-            filter.topRight = topRight
-            filter.bottomLeft = bottomLeft
-            filter.bottomRight = bottomRight
+            filter.topLeft = observation.topLeft.scaled(to: extent.size)
+            filter.topRight = observation.topRight.scaled(to: extent.size)
+            filter.bottomLeft = observation.bottomLeft.scaled(to: extent.size)
+            filter.bottomRight = observation.bottomRight.scaled(to: extent.size)
 
-            guard
-                let outputImage = filter.outputImage,
-                let correctedCGImage = ciContext.createCGImage(outputImage, from: outputImage.extent)
-            else {
-                throw Error.renderFailure
+            guard let outputImage = filter.outputImage else {
+                print(String(format: "Perspective correction produced no output (confidence: %.2f, %.2f ms).", observation.confidence, elapsedMs))
+                return image
             }
 
-            return Result(image: correctedCGImage, didApplyCorrection: true, usedFallback: false)
-        }
-
-        if let fallbackImage = fallbackCorrectedImage(from: ciImage, orientation: orientation) {
-            return Result(image: fallbackImage, didApplyCorrection: true, usedFallback: true)
-        }
-
-        return Result(image: sourceImage, didApplyCorrection: false, usedFallback: false)
-    }
-
-    static func correctedImageAsync(
-        from sourceImage: CGImage,
-        orientation: UIImage.Orientation
-    ) async throws -> Result {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    let result = try correctedImage(from: sourceImage, orientation: orientation)
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+            let outputExtent = outputImage.extent
+            guard let correctedCGImage = ciContext.createCGImage(outputImage, from: outputExtent) else {
+                print(String(format: "CIContext render failed (confidence: %.2f, %.2f ms).", observation.confidence, elapsedMs))
+                return image
             }
+
+            print(String(format: "Rectangle detected with confidence %.2f in %.2f ms.", observation.confidence, elapsedMs))
+            return UIImage(cgImage: correctedCGImage, scale: image.scale, orientation: .up)
+        } catch {
+            let elapsedMs = (CACurrentMediaTime() - start) * 1000.0
+            print(String(format: "Vision rectangle detection error after %.2f ms: %@", elapsedMs, error.localizedDescription))
+            return image
         }
     }
 }
@@ -104,92 +99,6 @@ enum PerspectiveCorrector {
 private extension CGPoint {
     func scaled(to size: CGSize) -> CGPoint {
         CGPoint(x: x * size.width, y: y * size.height)
-    }
-}
-
-private extension PerspectiveCorrector {
-    static func fallbackCorrectedImage(from image: CIImage, orientation: UIImage.Orientation) -> CGImage? {
-        let extent = image.extent
-
-        guard extent.width > 0, extent.height > 0 else {
-            return nil
-        }
-
-        let insetX = extent.width * 0.05
-        let insetY = extent.height * 0.05
-        let cropRect = extent.insetBy(dx: insetX, dy: insetY)
-
-        guard cropRect.width > 0, cropRect.height > 0 else {
-            return nil
-        }
-
-        var cropped = image.cropped(to: cropRect)
-        let translation = CGAffineTransform(translationX: -cropRect.origin.x, y: -cropRect.origin.y)
-        cropped = cropped.transformed(by: translation)
-
-        let size = CGSize(width: cropRect.width, height: cropRect.height)
-        let points = fallbackControlPoints(for: size, orientation: orientation)
-
-        let filter = CIFilter.perspectiveCorrection()
-        filter.inputImage = cropped
-        filter.topLeft = points.topLeft
-        filter.topRight = points.topRight
-        filter.bottomLeft = points.bottomLeft
-        filter.bottomRight = points.bottomRight
-
-        guard let outputImage = filter.outputImage else {
-            return nil
-        }
-
-        let outputRect = CGRect(origin: .zero, size: size)
-        return ciContext.createCGImage(outputImage, from: outputRect)
-    }
-
-    static func fallbackControlPoints(
-        for size: CGSize,
-        orientation: UIImage.Orientation
-    ) -> (topLeft: CGPoint, topRight: CGPoint, bottomLeft: CGPoint, bottomRight: CGPoint) {
-        let width = size.width
-        let height = size.height
-        let horizontalInset = width * 0.04
-        let verticalInset = height * 0.04
-        let verticalShift = height * 0.02
-        let horizontalShift = width * 0.02
-
-        var topLeft = CGPoint(x: 0, y: height)
-        var topRight = CGPoint(x: width, y: height)
-        var bottomLeft = CGPoint(x: 0, y: 0)
-        var bottomRight = CGPoint(x: width, y: 0)
-
-        switch orientation {
-        case .up, .upMirrored:
-            topLeft.x += horizontalInset
-            topRight.x -= horizontalInset
-            topLeft.y -= verticalShift
-            topRight.y -= verticalShift
-        case .down, .downMirrored:
-            bottomLeft.x += horizontalInset
-            bottomRight.x -= horizontalInset
-            bottomLeft.y += verticalShift
-            bottomRight.y += verticalShift
-        case .left, .leftMirrored:
-            topLeft.x += horizontalShift
-            bottomLeft.x += horizontalShift
-            topLeft.y -= verticalInset
-            bottomLeft.y += verticalInset
-        case .right, .rightMirrored:
-            topRight.x -= horizontalShift
-            bottomRight.x -= horizontalShift
-            topRight.y -= verticalInset
-            bottomRight.y += verticalInset
-        @unknown default:
-            topLeft.x += horizontalInset
-            topRight.x -= horizontalInset
-            topLeft.y -= verticalShift
-            topRight.y -= verticalShift
-        }
-
-        return (topLeft, topRight, bottomLeft, bottomRight)
     }
 }
 

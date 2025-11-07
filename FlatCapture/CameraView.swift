@@ -12,7 +12,7 @@ import Combine
 
 struct CameraView: View {
     @StateObject private var viewModel = CameraViewModel()
-    let onCapture: (UIImage) -> Void
+    let onCapture: (ProcessedCapture) -> Void
     @State private var isCapturing = false
     @State private var captureErrorMessage: String?
 
@@ -76,13 +76,13 @@ struct CameraView: View {
         captureErrorMessage = nil
 
         Task {
-            let image = await viewModel.capturePhoto()
+            let capture = await viewModel.capturePhoto()
 
             await MainActor.run {
                 isCapturing = false
 
-                if let image {
-                    onCapture(image)
+                if let capture {
+                    onCapture(capture)
                 } else {
                     captureErrorMessage = "Unable to capture photo."
                 }
@@ -125,6 +125,7 @@ final class CameraViewModel: NSObject, ObservableObject {
 
     let session: AVCaptureSession
     private let controller: CameraSessionController
+    private let captureProcessor = CaptureProcessing.shared
 
     override init() {
         let session = AVCaptureSession()
@@ -155,9 +156,19 @@ final class CameraViewModel: NSObject, ObservableObject {
         }
     }
 
-    func capturePhoto() async -> UIImage? {
+    func capturePhoto() async -> ProcessedCapture? {
         guard accessMessage == nil else { return nil }
-        return await controller.capturePhoto()
+        guard let originalImage = await controller.capturePhoto() else { return nil }
+
+        let correctedImage = await captureProcessor.correctPerspective(for: originalImage)
+        let didApplyCorrection = correctedImage !== originalImage
+
+        return ProcessedCapture(
+            original: originalImage,
+            corrected: correctedImage,
+            didApplyCorrection: didApplyCorrection,
+            usedFallback: false
+        )
     }
 
     func stopSession() {
